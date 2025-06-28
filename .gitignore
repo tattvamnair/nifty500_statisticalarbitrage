@@ -1,0 +1,46 @@
+# stat_arb_trader_dhan/.gitignore
+
+# Environment variables
+.env
+.env.*
+*.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Log files
+logs/
+*.log
+
+# Data files / Output CSVs (Optional - keep them out of git by default)
+*.csv
+*.html
+
+# macOS files
+.DS_Store

@@ -1,0 +1,17 @@
+# stat_arb_trader_dhan/requirements.txt
+
+# DhanHQ API Client
+dhanhq==2.1.0
+
+# Data Handling
+pandas==2.2.0
+numpy==1.26.4
+
+# Technical Analysis Indicators
+pandas-ta==0.3.14b
+
+# HTTP Requests (dependency of dhanhq, but good to list)
+requests==2.31.0
+
+# Environment Variable Management
+python-dotenv==1.0.1
