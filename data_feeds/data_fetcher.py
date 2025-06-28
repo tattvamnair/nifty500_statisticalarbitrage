@@ -2,7 +2,10 @@
 
 import pandas as pd
 import time
+import requests
+import json
 from collections import defaultdict
+from datetime import datetime, timedelta
 from core.logger_setup import logger
 from config import settings
 from data_feeds.instrument_manager import InstrumentManager
@@ -25,110 +28,112 @@ class DataFetcher:
             logger.info(f"Successfully fetched and cached Dhan instrument master. Shape: {self.instrument_master_df.shape}")
         except Exception as e:
             logger.error(f"Failed to fetch or process Dhan instrument master CSV: {e}", exc_info=True)
-            self.instrument_master_df = None
 
     def get_dhan_details_by_isin(self, isin: str):
         if self.instrument_master_df is None:
-            logger.error("Instrument master not loaded. Cannot look up details by ISIN.")
             return None
-        match = self.instrument_master_df[
-            (self.instrument_master_df['ISIN'] == isin) &
-            (self.instrument_master_df['EXCH_ID'] == 'NSE') &
-            (self.instrument_master_df['INSTRUMENT'] == 'EQUITY') &
-            (self.instrument_master_df['SERIES'] == 'EQ')
-        ]
-        if match.empty:
-            logger.debug(f"ISIN {isin} not found with strict 'EQ' series filter. Broadening search...")
-            match = self.instrument_master_df[
-                (self.instrument_master_df['ISIN'] == isin) &
-                (self.instrument_master_df['EXCH_ID'] == 'NSE') &
-                (self.instrument_master_df['INSTRUMENT'] == 'EQUITY')
-            ]
+        match = self.instrument_master_df[(self.instrument_master_df['ISIN'] == isin) & (self.instrument_master_df['EXCH_ID'] == 'NSE') & (self.instrument_master_df['INSTRUMENT'] == 'EQUITY')]
         if not match.empty:
-            if len(match) > 1:
-                logger.warning(f"Found {len(match)} entries for ISIN '{isin}'. Using first one.")
             return match.iloc[0]['SECURITY_ID']
-        logger.warning(f"No Dhan Security ID found for ISIN '{isin}' in NSE Equity segment after all attempts.")
         return None
 
-    def get_bulk_historical_data(self, symbol_isin_list: list, from_date: str, to_date: str):
-        all_data = {}
-        for symbol, isin in symbol_isin_list:
-            security_id = self.get_dhan_details_by_isin(isin)
-            if not security_id:
-                logger.warning(f"Skipping historical data for {symbol}: Could not resolve security ID from ISIN {isin}.")
-                time.sleep(0.21)
-                continue
-            try:
-                response = self.dhanhq_sdk.historical_daily_data(str(security_id), settings.DHAN_SEGMENT_NSE_EQ, settings.DHAN_INSTRUMENT_EQUITY, from_date, to_date)
-                if isinstance(response, dict) and response.get('status', '').lower() == 'success':
-                    data = response.get('data', {})
-                    if data and data.get('timestamp'):
-                        df = pd.DataFrame(data)
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-                        df.set_index('timestamp', inplace=True)
-                        all_data[symbol] = df
-                        logger.info(f"Fetched {len(df)} historical records for {symbol} (SecID: {security_id}).")
-                    else:
-                        logger.warning(f"Historical data success, but no data payload for {symbol} (SecID: {security_id}).")
-                else:
-                    logger.error(f"Failed to fetch historical data for {symbol} (SecID: {security_id}). Remarks: {response.get('remarks')}")
-            except Exception as e:
-                logger.error(f"Exception fetching historical data for {symbol}: {e}", exc_info=True)
-            time.sleep(0.21)
-        return all_data
+    def fetch_data(self, symbol: str, isin: str, timeframe: str, num_candles: int):
+        logger.info(f"Data request for {symbol}: {num_candles} candles of timeframe '{timeframe}'.")
+        security_id = self.get_dhan_details_by_isin(isin)
+        if not security_id:
+            logger.error(f"Cannot fetch data for {symbol}: Could not resolve Security ID.")
+            return pd.DataFrame()
+
+        SUPPORTED_INTRADAY = ['1', '5', '15', '60']
+        to_date = datetime.now()
+        
+        try:
+            if timeframe in SUPPORTED_INTRADAY:
+                from_date = to_date - timedelta(days=89)
+                response = self.dhanhq_sdk.intraday_minute_data(security_id, settings.DHAN_SEGMENT_NSE_EQ, settings.DHAN_INSTRUMENT_EQUITY, timeframe, from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d"))
+            else: # Daily or Weekly
+                days_to_fetch = int(num_candles * 1.8) if timeframe == 'D' else int(num_candles * 7 * 1.8)
+                from_date = to_date - timedelta(days=days_to_fetch)
+                response = self.dhanhq_sdk.historical_daily_data(security_id, settings.DHAN_SEGMENT_NSE_EQ, settings.DHAN_INSTRUMENT_EQUITY, from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d"))
+
+            if isinstance(response, dict) and response.get('status', '').lower() == 'success':
+                data = response.get('data', {})
+                if data and data.get('timestamp'):
+                    df = pd.DataFrame(data)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                    df.set_index('timestamp', inplace=True)
+                    if timeframe == 'W':
+                        df = df.resample('W-FRI').agg({'open':'first', 'high':'max', 'low':'min', 'close':'last', 'volume':'sum'}).dropna()
+                    df = df.tail(num_candles).copy()
+                    return self.calculate_indicators(df, symbol)
+        except Exception as e:
+            logger.error(f"Exception in fetch_data for {symbol}: {e}", exc_info=True)
+        return pd.DataFrame()
 
     def get_live_quotes(self, symbol_isin_list: list):
+        """
+        Fetches live quotes directly using the requests library for maximum reliability.
+        """
         if not self.dhanhq_sdk:
             logger.error("Cannot fetch live quotes: Dhan SDK client not initialized.")
             return {}
-        payload = defaultdict(list)
+
         security_id_to_symbol_map = {}
+        payload = defaultdict(list)
         for symbol, isin in symbol_isin_list:
             security_id = self.get_dhan_details_by_isin(isin)
             if security_id:
                 payload[settings.DHAN_SEGMENT_NSE_EQ].append(security_id)
                 security_id_to_symbol_map[security_id] = symbol
-            else:
-                logger.warning(f"Skipping live quote for {symbol}: Could not resolve its Dhan Security ID.")
+        
         if not payload:
-            logger.error("Could not resolve any instruments to fetch live quotes for.")
+            logger.error("Could not resolve any instruments for live quotes.")
             return {}
+
         try:
-            logger.debug(f"Sending live quote request payload: {dict(payload)}")
-            # --- THE CORRECTED LINE ---
-            response = self.dhanhq_sdk.quote_data(dict(payload))
-            # --- END OF CORRECTION ---
-            if isinstance(response, dict) and response.get('status', '').lower() == 'success':
-                data = response.get('data', {})
+            api_url = "https://api.dhan.co/v2/marketfeed/quote"
+            headers = {
+                'access-token': self.dhanhq_sdk.dhan_http.access_token,
+                'client-id': self.dhanhq_sdk.dhan_http.client_id,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            logger.debug(f"Sending DIRECT live quote request to {api_url}...")
+            response = requests.post(api_url, headers=headers, json=dict(payload), timeout=10)
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+
+            response_json = response.json()
+            if response_json.get('status', '').lower() == 'success':
+                data = response_json.get('data', {})
                 live_quotes_by_symbol = {}
                 nse_eq_data = data.get(settings.DHAN_SEGMENT_NSE_EQ, {})
                 for sec_id, quote_details in nse_eq_data.items():
-                    symbol = security_id_to_symbol_map.get(str(sec_id)) # Match as string
+                    symbol = security_id_to_symbol_map.get(str(sec_id))
                     if symbol:
                         live_quotes_by_symbol[symbol] = quote_details
-                logger.info(f"Successfully fetched live quotes for {len(live_quotes_by_symbol)} symbols.")
                 return live_quotes_by_symbol
             else:
-                logger.error(f"Live quote API call failed. Status: {response.get('status', 'N/A')}, Remarks: {response.get('remarks', 'N/A')}")
+                logger.error(f"Live quote API returned failure status: {response_json}")
                 return {}
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"HTTPError during direct live quote call: {http_err}")
+        except json.JSONDecodeError:
+            logger.error(f"Failed to decode JSON from live quote response. Raw text: {response.text}")
         except Exception as e:
-            logger.error(f"Exception during live quote fetch: {e}", exc_info=True)
-            return {}
+            logger.error(f"Exception during direct live quote fetch: {e}", exc_info=True)
+        return {}
 
-    def calculate_indicators(self, historical_data: dict):
-        logger.info("Calculating indicators on historical data...")
-        for symbol, df in historical_data.items():
-            if not df.empty:
-                try:
-                    import pandas_ta as ta
-                    df['SMA_20'] = ta.sma(df['close'], length=20)
-                    df['RSI_14'] = ta.rsi(df['close'], length=14)
-                    historical_data[symbol] = df
-                    logger.debug(f"Calculated indicators for {symbol}. Last SMA: {df['SMA_20'].iloc[-1]:.2f}, Last RSI: {df['RSI_14'].iloc[-1]:.2f}")
-                except ImportError:
-                    logger.warning("`pandas-ta` is not installed. Skipping indicator calculation. Install with `pip install pandas-ta`")
-                    break
-                except Exception as e:
-                    logger.error(f"Error calculating indicators for {symbol}: {e}")
-        return historical_data
+    def calculate_indicators(self, df: pd.DataFrame, symbol: str):
+        if df.empty: return df
+        try:
+            import pandas_ta as ta
+            df['EMA_9'] = ta.ema(df['close'], length=9)
+            df['EMA_15'] = ta.ema(df['close'], length=15)
+            df['EMA_65'] = ta.ema(df['close'], length=65)
+            df['EMA_100'] = ta.ema(df['close'], length=100)
+            df['EMA_200'] = ta.ema(df['close'], length=200)
+            df['RSI_14'] = ta.rsi(df['close'], length=14)
+        except Exception as e:
+            logger.error(f"Error calculating indicators for {symbol}: {e}")
+        return df
