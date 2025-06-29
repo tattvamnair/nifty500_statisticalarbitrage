@@ -72,7 +72,8 @@ def main():
     # =================================================================================
     # --- 1. YOUR INPUTS: CONFIGURE YOUR STRATEGY AND DATA HERE ---
     # =================================================================================
-    SELECTED_STRATEGY = 1
+    SELECTED_STRATEGY = 2  # 1 for EMA Crossover, 2 for RSI Divergence
+    # --- SET YOUR STRATEGY ---
     SYMBOLS_TO_TRACK = ['TATAMOTORS', 'ITC', 'HDFCBANK']
     TIMEFRAME = 'W'  
     # --- SET YOUR TIMEFRAME ---
