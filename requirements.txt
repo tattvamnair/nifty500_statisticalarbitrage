@@ -15,3 +15,6 @@ requests==2.31.0
 
 # Environment Variable Management
 python-dotenv==1.0.1
+
+# Statistical Modeling
+statsmodels==0.14.1
