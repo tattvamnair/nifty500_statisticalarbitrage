@@ -18,3 +18,7 @@ python-dotenv==1.0.1
 
 # Statistical Modeling
 statsmodels==0.14.1
+
+# --- API Server ---
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
