@@ -119,6 +119,10 @@ class DataFetcher:
             df['EMA_100'] = ta.ema(df['close'], length=100)
             df['EMA_200'] = ta.ema(df['close'], length=200)
             df['RSI_14'] = ta.rsi(df['close'], length=14)
+            # --- THIS IS THE CORRECTED LINE ---
+            df['VMA_20'] = ta.sma(df['volume'], length=20) # Calculate 20-period Volume Moving Average
+            df['SMA_200'] = ta.sma(df['close'], length=200)
+            # --- END OF CORRECTION ---
         except Exception as e:
             logger.error(f"Error calculating indicators for {symbol}: {e}")
         return df
