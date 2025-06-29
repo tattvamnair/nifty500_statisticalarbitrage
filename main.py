@@ -18,6 +18,8 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
     Executes one full cycle of data fetching and signal generation for all symbols.
     """
     logger.info("--- Starting New Strategy Cycle ---")
+    actionable_signals_found = 0
+
     for symbol in symbols:
         logger.info(f"================== Processing {symbol} ==================")
         
@@ -29,7 +31,7 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
         historical_df = data_fetcher.fetch_data(symbol, isin, timeframe, num_candles)
         
         if historical_df.empty:
-            logger.warning(f"Could not fetch historical data for {symbol}.")
+            logger.warning(f"Could not fetch historical data for {symbol}. Skipping analysis.")
             continue
 
         signals_df = strategy_function(historical_df, use_trend_filter=True)
@@ -37,12 +39,31 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
         latest_signal_row = signals_df.iloc[-1]
         latest_signal = latest_signal_row['signal']
         
-        logger.info(f"LATEST SIGNAL for {symbol} on {latest_signal_row.name.date()}: {latest_signal} (Position: {latest_signal_row['position']})")
+        # --- LOGGING ENHANCEMENT: DETAILED SIGNAL OUTPUT ---
+        is_intraday = timeframe.upper() not in ['D', 'W', '1D', '1W']
+        ts_format = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
+        
+        # Prepare a detailed, formatted string for the log
+        log_message = (
+            f"\n"
+            f"-------------------- LATEST SIGNAL: {symbol} --------------------\n"
+            f"  > Timestamp:         {latest_signal_row.name.strftime(ts_format)}\n"
+            f"  > Signal:            {latest_signal} (Current Position: {int(latest_signal_row['position'])})\n"
+            f"  > Last Close:        {latest_signal_row['close']:.2f}\n"
+            f"  > EMA(9) / EMA(15):    {latest_signal_row.get('EMA_9', 0):.2f} / {latest_signal_row.get('EMA_15', 0):.2f}\n"
+            f"  > RSI(14):           {latest_signal_row.get('RSI_14', 0):.2f}\n"
+            f"-----------------------------------------------------------------"
+        )
+        logger.info(log_message)
 
         if latest_signal != 'HOLD':
-            print(f"  > ACTIONABLE SIGNAL: {symbol} -> {latest_signal}")
+            actionable_signals_found += 1
+            print(f"\n"
+                  f"  **********************************************************\n"
+                  f"  *** ACTIONABLE SIGNAL: {symbol} -> {latest_signal} ***\n"
+                  f"  **********************************************************\n")
     
-    logger.info("--- Strategy Cycle Finished ---")
+    logger.info(f"--- Strategy Cycle Finished. Found {actionable_signals_found} actionable signal(s). ---")
 
 def main():
     """
@@ -51,14 +72,19 @@ def main():
     # =================================================================================
     # --- 1. YOUR INPUTS: CONFIGURE YOUR STRATEGY AND DATA HERE ---
     # =================================================================================
-    SELECTED_STRATEGY = 2
-    SYMBOLS_TO_TRACK = ['RELIANCE', 'TCS', 'HDFCBANK']
-    TIMEFRAME = 'D'
+    SELECTED_STRATEGY = 1
+    SYMBOLS_TO_TRACK = ['TATAMOTORS', 'ITC', 'HDFCBANK']
+    TIMEFRAME = 'W'  
+    # --- SET YOUR TIMEFRAME ---
+    # Valid options:
+    # Intraday: '1M', '5M', '15M', '30M', '1H', '4H'
+    # Daily:    'D'
+    # Weekly:   'W'
     NUM_CANDLES = 252
-    CYCLE_INTERVAL_SECONDS = 30  # <-- BOT WILL RUN EVERY 30 SECONDS
+    CYCLE_INTERVAL_SECONDS = 60
     # =================================================================================
 
-    logger.info("--- Initializing Services ---")
+    logger.info("--- Initializing Trading Bot ---")
     
     dhan_connection = DhanClient()
     dhan_api_sdk = dhan_connection.get_api_client()
@@ -74,12 +100,22 @@ def main():
         logger.error(f"Invalid strategy number: {SELECTED_STRATEGY}. Exiting.")
         sys.exit(1)
     
-    logger.info(f"--- Initialization Complete. Strategy #{SELECTED_STRATEGY} selected. Starting main loop. ---")
+    # --- LOGGING ENHANCEMENT: PRINT CONFIGURATION ---
+    logger.info(
+        f"\n"
+        f"====================== BOT CONFIGURATION ======================\n"
+        f"STRATEGY:          #{SELECTED_STRATEGY} ({strategy_function.__name__})\n"
+        f"SYMBOLS:           {', '.join(SYMBOLS_TO_TRACK)}\n"
+        f"TIMEFRAME:         {TIMEFRAME}\n"
+        f"CANDLES TO ANALYZE: {NUM_CANDLES}\n"
+        f"CYCLE INTERVAL:    {CYCLE_INTERVAL_SECONDS} seconds\n"
+        f"==============================================================="
+    )
     
-    # --- THIS IS THE CONTINUOUS LOOP ---
+    logger.info("--- Initialization Complete. Starting main loop. ---")
+    
     while True:
         try:
-            # You can add a market hours check here if you only want to run during trading hours
             run_strategy_cycle(
                 strategy_function=strategy_function,
                 symbols=SYMBOLS_TO_TRACK,

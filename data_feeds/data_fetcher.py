@@ -41,14 +41,32 @@ class DataFetcher:
             logger.error(f"Cannot fetch data for {symbol}: Could not resolve Security ID.")
             return pd.DataFrame()
 
-        SUPPORTED_INTRADAY = ['1', '5', '15', '60']
         to_date = datetime.now()
         df = pd.DataFrame()
+        timeframe = timeframe.upper() # Standardize input
+
+        # --- LOGGING ENHANCEMENT ---
+        logger.info(f"Preparing to fetch data for {symbol} | Timeframe: {timeframe} | Candles: {num_candles}")
 
         try:
             time.sleep(0.3)
-            
-            if timeframe in SUPPORTED_INTRADAY:
+            response = None
+            is_intraday = False
+
+            if timeframe in ['D', '1D', 'W', '1W']:
+                logger.info("-> Fetching base data from Daily API endpoint.")
+                days_to_fetch = int(num_candles * (2.0 if timeframe.endswith('D') else 8.0)) # Increased buffer
+                from_date = to_date - timedelta(days=days_to_fetch)
+                response = self.dhanhq_sdk.historical_daily_data(
+                    security_id=str(security_id),
+                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
+                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
+                    from_date=from_date.strftime("%Y-%m-%d"),
+                    to_date=to_date.strftime("%Y-%m-%d")
+                )
+            else:
+                logger.info(f"-> Fetching 1-minute base data to build {timeframe} candles.")
+                is_intraday = True
                 from_date = to_date - timedelta(days=89)
                 response = self.dhanhq_sdk.intraday_minute_data(
                     security_id=str(security_id),
@@ -57,34 +75,60 @@ class DataFetcher:
                     from_date=from_date.strftime("%Y-%m-%d"),
                     to_date=to_date.strftime("%Y-%m-%d")
                 )
-            else: # Daily or Weekly
-                days_to_fetch = int(num_candles * 1.8) if timeframe == 'D' else int(num_candles * 7 * 1.8)
-                from_date = to_date - timedelta(days=days_to_fetch)
-                # --- THIS IS THE CORRECTED CALL ---
-                response = self.dhanhq_sdk.historical_daily_data(
-                    security_id=str(security_id),
-                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
-                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
-                    from_date=from_date.strftime("%Y-%m-%d"),
-                    to_date=to_date.strftime("%Y-%m-%d")
-                )
-                # --- END OF CORRECTION ---
-
+            
             if isinstance(response, dict) and response.get('status', '').lower() == 'success':
                 data = response.get('data', {})
-                if data and data.get('timestamp'):
+                
+                if 'start_Time' in data:
+                    df = pd.DataFrame(data).rename(columns={'start_Time': 'timestamp'})
+                elif 'timestamp' in data:
                     df = pd.DataFrame(data)
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-                    df.set_index('timestamp', inplace=True)
-                    if timeframe == 'W':
-                        ohlc_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-                        df = df.resample('W-FRI').agg(ohlc_dict).dropna()
-                    df = df.tail(num_candles).copy()
-                    return self.calculate_indicators(df, symbol)
+                else:
+                    logger.warning(f"No timestamp data found for {symbol} on timeframe {timeframe}.")
+                    return pd.DataFrame()
+                
+                if df.empty:
+                    logger.warning(f"API returned success but no data for {symbol} on timeframe {timeframe}.")
+                    return pd.DataFrame()
+
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                df.set_index('timestamp', inplace=True)
+                
+                ohlc_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+                
+                if timeframe in ['W', '1W']:
+                    df = df.resample('W-FRI').agg(ohlc_dict).dropna()
+                elif is_intraday:
+                    resample_map = {
+                        '1': '1min', '1M': '1min', '5': '5min', '5M': '5min',
+                        '15': '15min', '15M': '15min', '30': '30min', '30M': '30min',
+                        '60': '60min', '1H': '60min', '240': '240min', '4H': '240min'
+                    }
+                    if timeframe not in resample_map:
+                        logger.error(f"Unsupported intraday timeframe: {timeframe} for {symbol}")
+                        return pd.DataFrame()
+                    
+                    resample_rule = resample_map[timeframe]
+                    if resample_rule != '1min':
+                        df = df.resample(resample_rule).agg(ohlc_dict).dropna()
+
+                df = df.tail(num_candles).copy()
+
+                # --- LOGGING ENHANCEMENT: DATA SUMMARY ---
+                if not df.empty:
+                    start_ts = df.index.min().strftime('%Y-%m-%d %H:%M')
+                    end_ts = df.index.max().strftime('%Y-%m-%d %H:%M')
+                    logger.info(f"  > Success: Processed {len(df)} candles for {symbol} from {start_ts} to {end_ts}.")
+                else:
+                    logger.warning(f"  > No data remained for {symbol} after processing.")
+                    return pd.DataFrame()
+
+                return self.calculate_indicators(df, symbol)
             else:
                 logger.error(f"API call for historical data for {symbol} failed. Remarks: {response.get('remarks')}")
         except Exception as e:
             logger.error(f"Exception during data fetch for {symbol}: {e}", exc_info=True)
+            
         return pd.DataFrame()
 
     def get_live_quotes(self, symbol_isin_list: list):
@@ -119,10 +163,9 @@ class DataFetcher:
             df['EMA_100'] = ta.ema(df['close'], length=100)
             df['EMA_200'] = ta.ema(df['close'], length=200)
             df['RSI_14'] = ta.rsi(df['close'], length=14)
-            # --- THIS IS THE CORRECTED LINE ---
-            df['VMA_20'] = ta.sma(df['volume'], length=20) # Calculate 20-period Volume Moving Average
+            df['VMA_20'] = ta.sma(df['volume'], length=20)
             df['SMA_200'] = ta.sma(df['close'], length=200)
-            # --- END OF CORRECTION ---
+            logger.info("  > Indicators calculated successfully.")
         except Exception as e:
             logger.error(f"Error calculating indicators for {symbol}: {e}")
         return df

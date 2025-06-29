@@ -22,3 +22,6 @@ statsmodels==0.14.1
 # --- API Server ---
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
+
+# For high-performance data types in Pandas
+pyarrow==16.0.0
