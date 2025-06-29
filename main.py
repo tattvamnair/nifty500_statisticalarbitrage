@@ -30,8 +30,8 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
 
         historical_df = data_fetcher.fetch_data(symbol, isin, timeframe, num_candles)
         
-        if historical_df.empty:
-            logger.warning(f"Could not fetch historical data for {symbol}. Skipping analysis.")
+        if historical_df.empty or 'ADX_14' not in historical_df.columns:
+            logger.warning(f"Could not fetch or process sufficient historical data for {symbol}. Skipping analysis.")
             continue
 
         signals_df = strategy_function(historical_df, use_trend_filter=True)
@@ -39,28 +39,65 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
         latest_signal_row = signals_df.iloc[-1]
         latest_signal = latest_signal_row['signal']
         
-        # --- LOGGING ENHANCEMENT: DETAILED SIGNAL OUTPUT ---
-        is_intraday = timeframe.upper() not in ['D', 'W', '1D', '1W']
-        ts_format = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
+        # --- FINALIZED "DASHBOARD" LOGGING WITH TIMEZONE CORRECTION ---
         
-        # Prepare a detailed, formatted string for the log
+        # FIX: Convert Timestamp from UTC to India Standard Time (IST) for correct display
+        latest_timestamp_utc = latest_signal_row.name
+        latest_timestamp_ist = latest_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Kolkata')
+        
+        is_intraday = timeframe.upper() not in ['D', 'W', '1D', '1W']
+        ts_format = '%Y-%m-%d %H:%M IST' if is_intraday else '%Y-%m-%d' # Add 'IST' to format
+
+        # 1. Gather all the data points for the dashboard
+        last_close = latest_signal_row['close']
+        ema_200 = latest_signal_row['EMA_200']
+        adx_14 = latest_signal_row['ADX_14']
+        adx_threshold = 25
+
+        # 2. Determine the market state based on the strategy's rules
+        market_state = "SIDEWAYS / CHOP"
+        if adx_14 >= adx_threshold:
+            if last_close > ema_200:
+                market_state = "UPTREND"
+            else:
+                market_state = "DOWNTREND"
+        
+        # 3. Determine the signal text and color code for clarity
+        signal_color_map = {
+            "BUY": "\033[92m",  "SELL": "\033[91m", "EXIT_LONG": "\033[93m",
+            "EXIT_SHORT": "\033[93m", "HOLD_LONG": "\033[96m", "HOLD_SHORT": "\033[96m",
+            "HOLD": "\033[0m"
+        }
+        END_COLOR = "\033[0m"
+        color = signal_color_map.get(latest_signal, "\033[0m")
+        colored_signal = f"{color}{latest_signal.replace('_', ' ')}{END_COLOR}"
+
+        # 4. Build the detailed log message using the corrected IST timestamp
         log_message = (
             f"\n"
-            f"-------------------- LATEST SIGNAL: {symbol} --------------------\n"
-            f"  > Timestamp:         {latest_signal_row.name.strftime(ts_format)}\n"
-            f"  > Signal:            {latest_signal} (Current Position: {int(latest_signal_row['position'])})\n"
-            f"  > Last Close:        {latest_signal_row['close']:.2f}\n"
-            f"  > EMA(9) / EMA(15):    {latest_signal_row.get('EMA_9', 0):.2f} / {latest_signal_row.get('EMA_15', 0):.2f}\n"
-            f"  > RSI(14):           {latest_signal_row.get('RSI_14', 0):.2f}\n"
-            f"-----------------------------------------------------------------"
+            f"-------------------- ANALYSIS & SIGNAL: {symbol} --------------------\n"
+            f"  [MARKET STATE]: {market_state}\n"
+            f"    - Trend Strength (ADX): {adx_14:.2f} (Threshold: {adx_threshold})\n"
+            f"    - Long-Term Trend (EMA200): {ema_200:.2f} (Current Price: {last_close:.2f})\n"
+            f"\n"
+            f"  [LATEST CANDLE DATA]:\n"
+            f"    - Timestamp:        {latest_timestamp_ist.strftime(ts_format)}\n"
+            f"    - Price (Close):    {last_close:.2f}\n"
+            f"    - EMA(9) / EMA(15):   {latest_signal_row.get('EMA_9', 0):.2f} / {latest_signal_row.get('EMA_15', 0):.2f}\n"
+            f"    - RSI(14):          {latest_signal_row.get('RSI_14', 0):.2f}\n"
+            f"\n"
+            f"  [FINAL SIGNAL]:\n"
+            f"    - Decision:         {colored_signal}\n"
+            f"    - Position Status:  {int(latest_signal_row['position'])} (1=Long, -1=Short, 0=Flat)\n"
+            f"----------------------------------------------------------------------"
         )
         logger.info(log_message)
 
-        if latest_signal != 'HOLD':
+        if latest_signal in ['BUY', 'SELL', 'EXIT_LONG', 'EXIT_SHORT']:
             actionable_signals_found += 1
             print(f"\n"
                   f"  **********************************************************\n"
-                  f"  *** ACTIONABLE SIGNAL: {symbol} -> {latest_signal} ***\n"
+                  f"  *** ACTIONABLE ALERT: {symbol} -> {color}{latest_signal.replace('_', ' ')}{END_COLOR} ***\n"
                   f"  **********************************************************\n")
     
     logger.info(f"--- Strategy Cycle Finished. Found {actionable_signals_found} actionable signal(s). ---")
@@ -72,15 +109,9 @@ def main():
     # =================================================================================
     # --- 1. YOUR INPUTS: CONFIGURE YOUR STRATEGY AND DATA HERE ---
     # =================================================================================
-    SELECTED_STRATEGY = 2  # 1 for EMA Crossover, 2 for RSI Divergence
-    # --- SET YOUR STRATEGY ---
+    SELECTED_STRATEGY = 1
     SYMBOLS_TO_TRACK = ['TATAMOTORS', 'ITC', 'HDFCBANK']
-    TIMEFRAME = 'W'  
-    # --- SET YOUR TIMEFRAME ---
-    # Valid options:
-    # Intraday: '1M', '5M', '15M', '30M', '1H', '4H'
-    # Daily:    'D'
-    # Weekly:   'W'
+    TIMEFRAME = '1M'
     NUM_CANDLES = 252
     CYCLE_INTERVAL_SECONDS = 60
     # =================================================================================
@@ -101,7 +132,6 @@ def main():
         logger.error(f"Invalid strategy number: {SELECTED_STRATEGY}. Exiting.")
         sys.exit(1)
     
-    # --- LOGGING ENHANCEMENT: PRINT CONFIGURATION ---
     logger.info(
         f"\n"
         f"====================== BOT CONFIGURATION ======================\n"

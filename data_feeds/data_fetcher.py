@@ -43,10 +43,7 @@ class DataFetcher:
 
         to_date = datetime.now()
         df = pd.DataFrame()
-        timeframe = timeframe.upper() # Standardize input
-
-        # --- LOGGING ENHANCEMENT ---
-        logger.info(f"Preparing to fetch data for {symbol} | Timeframe: {timeframe} | Candles: {num_candles}")
+        timeframe = timeframe.upper()
 
         try:
             time.sleep(0.3)
@@ -54,25 +51,19 @@ class DataFetcher:
             is_intraday = False
 
             if timeframe in ['D', '1D', 'W', '1W']:
-                logger.info("-> Fetching base data from Daily API endpoint.")
-                days_to_fetch = int(num_candles * (2.0 if timeframe.endswith('D') else 8.0)) # Increased buffer
+                days_to_fetch = int(num_candles * (2.0 if timeframe.endswith('D') else 8.0))
                 from_date = to_date - timedelta(days=days_to_fetch)
                 response = self.dhanhq_sdk.historical_daily_data(
-                    security_id=str(security_id),
-                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
-                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
-                    from_date=from_date.strftime("%Y-%m-%d"),
+                    security_id=str(security_id), exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
+                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY, from_date=from_date.strftime("%Y-%m-%d"),
                     to_date=to_date.strftime("%Y-%m-%d")
                 )
             else:
-                logger.info(f"-> Fetching 1-minute base data to build {timeframe} candles.")
                 is_intraday = True
                 from_date = to_date - timedelta(days=89)
                 response = self.dhanhq_sdk.intraday_minute_data(
-                    security_id=str(security_id),
-                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
-                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
-                    from_date=from_date.strftime("%Y-%m-%d"),
+                    security_id=str(security_id), exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
+                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY, from_date=from_date.strftime("%Y-%m-%d"),
                     to_date=to_date.strftime("%Y-%m-%d")
                 )
             
@@ -84,11 +75,9 @@ class DataFetcher:
                 elif 'timestamp' in data:
                     df = pd.DataFrame(data)
                 else:
-                    logger.warning(f"No timestamp data found for {symbol} on timeframe {timeframe}.")
                     return pd.DataFrame()
                 
                 if df.empty:
-                    logger.warning(f"API returned success but no data for {symbol} on timeframe {timeframe}.")
                     return pd.DataFrame()
 
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
@@ -100,9 +89,8 @@ class DataFetcher:
                     df = df.resample('W-FRI').agg(ohlc_dict).dropna()
                 elif is_intraday:
                     resample_map = {
-                        '1': '1min', '1M': '1min', '5': '5min', '5M': '5min',
-                        '15': '15min', '15M': '15min', '30': '30min', '30M': '30min',
-                        '60': '60min', '1H': '60min', '240': '240min', '4H': '240min'
+                        '1': '1min', '1M': '1min', '5': '5min', '5M': '5min', '15': '15min', '15M': '15min',
+                        '30': '30min', '30M': '30min', '60': '60min', '1H': '60min', '240': '240min', '4H': '240min'
                     }
                     if timeframe not in resample_map:
                         logger.error(f"Unsupported intraday timeframe: {timeframe} for {symbol}")
@@ -114,13 +102,7 @@ class DataFetcher:
 
                 df = df.tail(num_candles).copy()
 
-                # --- LOGGING ENHANCEMENT: DATA SUMMARY ---
-                if not df.empty:
-                    start_ts = df.index.min().strftime('%Y-%m-%d %H:%M')
-                    end_ts = df.index.max().strftime('%Y-%m-%d %H:%M')
-                    logger.info(f"  > Success: Processed {len(df)} candles for {symbol} from {start_ts} to {end_ts}.")
-                else:
-                    logger.warning(f"  > No data remained for {symbol} after processing.")
+                if df.empty:
                     return pd.DataFrame()
 
                 return self.calculate_indicators(df, symbol)
@@ -159,13 +141,16 @@ class DataFetcher:
             import pandas_ta as ta
             df['EMA_9'] = ta.ema(df['close'], length=9)
             df['EMA_15'] = ta.ema(df['close'], length=15)
-            df['EMA_65'] = ta.ema(df['close'], length=65)
-            df['EMA_100'] = ta.ema(df['close'], length=100)
             df['EMA_200'] = ta.ema(df['close'], length=200)
             df['RSI_14'] = ta.rsi(df['close'], length=14)
+
+            adx_data = ta.adx(df['high'], df['low'], df['close'], length=14)
+            if adx_data is not None and not adx_data.empty:
+                df['ADX_14'] = adx_data['ADX_14']
+
+            df['SMA_50'] = ta.sma(df['close'], length=50)
             df['VMA_20'] = ta.sma(df['volume'], length=20)
             df['SMA_200'] = ta.sma(df['close'], length=200)
-            logger.info("  > Indicators calculated successfully.")
         except Exception as e:
             logger.error(f"Error calculating indicators for {symbol}: {e}")
         return df
