@@ -28,13 +28,8 @@ class DataFetcher:
 
     def get_dhan_details_by_isin(self, isin: str):
         if self.instrument_master_df is None:
-            logger.error("Instrument master not loaded. Cannot look up details by ISIN.")
             return None
-        match = self.instrument_master_df[
-            (self.instrument_master_df['ISIN'] == isin) & (self.instrument_master_df['EXCH_ID'] == 'NSE') &
-            (self.instrument_master_df['INSTRUMENT'] == 'EQUITY') & (self.instrument_master_df['SERIES'] == 'EQ')]
-        if match.empty:
-            match = self.instrument_master_df[(self.instrument_master_df['ISIN'] == isin) & (self.instrument_master_df['EXCH_ID'] == 'NSE') & (self.instrument_master_df['INSTRUMENT'] == 'EQUITY')]
+        match = self.instrument_master_df[(self.instrument_master_df['ISIN'] == isin) & (self.instrument_master_df['EXCH_ID'] == 'NSE') & (self.instrument_master_df['INSTRUMENT'] == 'EQUITY')]
         if not match.empty:
             return match.iloc[0]['SECURITY_ID']
         logger.warning(f"No Dhan Security ID found for ISIN '{isin}' in NSE Equity segment.")
@@ -43,7 +38,7 @@ class DataFetcher:
     def fetch_data(self, symbol: str, isin: str, timeframe: str, num_candles: int):
         security_id = self.get_dhan_details_by_isin(isin)
         if not security_id:
-            logger.error(f"Cannot fetch data for {symbol}: Could not resolve Security ID from ISIN {isin}.")
+            logger.error(f"Cannot fetch data for {symbol}: Could not resolve Security ID.")
             return pd.DataFrame()
 
         SUPPORTED_INTRADAY = ['1', '5', '15', '60']
@@ -51,16 +46,29 @@ class DataFetcher:
         df = pd.DataFrame()
 
         try:
-            # Add a small delay before every API call to respect rate limits
-            time.sleep(0.3) 
+            time.sleep(0.3)
             
             if timeframe in SUPPORTED_INTRADAY:
                 from_date = to_date - timedelta(days=89)
-                response = self.dhanhq_sdk.intraday_minute_data(security_id, settings.DHAN_SEGMENT_NSE_EQ, settings.DHAN_INSTRUMENT_EQUITY, timeframe, from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d"))
+                response = self.dhanhq_sdk.intraday_minute_data(
+                    security_id=str(security_id),
+                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
+                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
+                    from_date=from_date.strftime("%Y-%m-%d"),
+                    to_date=to_date.strftime("%Y-%m-%d")
+                )
             else: # Daily or Weekly
                 days_to_fetch = int(num_candles * 1.8) if timeframe == 'D' else int(num_candles * 7 * 1.8)
                 from_date = to_date - timedelta(days=days_to_fetch)
-                response = self.dhanhq_sdk.historical_daily_data(security_id, settings.DHAN_SEGMENT_NSE_EQ, settings.DHAN_INSTRUMENT_EQUITY, from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d"))
+                # --- THIS IS THE CORRECTED CALL ---
+                response = self.dhanhq_sdk.historical_daily_data(
+                    security_id=str(security_id),
+                    exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
+                    instrument_type=settings.DHAN_INSTRUMENT_EQUITY,
+                    from_date=from_date.strftime("%Y-%m-%d"),
+                    to_date=to_date.strftime("%Y-%m-%d")
+                )
+                # --- END OF CORRECTION ---
 
             if isinstance(response, dict) and response.get('status', '').lower() == 'success':
                 data = response.get('data', {})
@@ -74,10 +82,32 @@ class DataFetcher:
                     df = df.tail(num_candles).copy()
                     return self.calculate_indicators(df, symbol)
             else:
-                logger.error(f"API call failed for {symbol}. Remarks: {response.get('remarks')}")
+                logger.error(f"API call for historical data for {symbol} failed. Remarks: {response.get('remarks')}")
         except Exception as e:
             logger.error(f"Exception during data fetch for {symbol}: {e}", exc_info=True)
         return pd.DataFrame()
+
+    def get_live_quotes(self, symbol_isin_list: list):
+        if not self.dhanhq_sdk: return {}
+        live_quotes_by_symbol = {}
+        for symbol, isin in symbol_isin_list:
+            security_id = self.get_dhan_details_by_isin(isin)
+            if not security_id: continue
+            try:
+                payload = {settings.DHAN_SEGMENT_NSE_EQ: [security_id]}
+                response = self.dhanhq_sdk.quote_data(securities=payload)
+                if isinstance(response, dict) and response.get('status', '').lower() == 'success':
+                    data = response.get('data', {}).get(settings.DHAN_SEGMENT_NSE_EQ, {})
+                    if data and security_id in data:
+                        live_quotes_by_symbol[symbol] = data[security_id]
+                else:
+                    logger.error(f"Live quote API call failed for {symbol}. Remarks: {response.get('remarks', 'N/A')}")
+                time.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Exception during live quote fetch for {symbol}: {e}", exc_info=True)
+        if live_quotes_by_symbol:
+            logger.info(f"Fetched live quotes for {len(live_quotes_by_symbol)}/{len(symbol_isin_list)} symbols.")
+        return live_quotes_by_symbol
 
     def calculate_indicators(self, df: pd.DataFrame, symbol: str):
         if df.empty: return df
