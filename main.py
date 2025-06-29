@@ -18,7 +18,8 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
     Executes one full cycle of data fetching and signal generation for all symbols.
     """
     logger.info("--- Starting New Strategy Cycle ---")
-    actionable_signals_found = 0
+    
+    long_entries, long_exits, short_entries, short_exits = [], [], [], []
 
     for symbol in symbols:
         logger.info(f"================== Processing {symbol} ==================")
@@ -30,62 +31,68 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
 
         historical_df = data_fetcher.fetch_data(symbol, isin, timeframe, num_candles)
         
-        if historical_df.empty or 'ADX_14' not in historical_df.columns:
-            logger.warning(f"Could not fetch or process sufficient historical data for {symbol}. Skipping analysis.")
+        if historical_df.empty:
+            logger.warning(f"No historical data for {symbol}. Skipping analysis.")
             continue
 
-        signals_df = strategy_function(historical_df, use_trend_filter=True)
+        # The strategy function is now solely responsible for signal generation
+        signals_df = strategy_function(historical_df)
         
+        # Defensive check in case the strategy returns an empty dataframe
+        if signals_df.empty:
+            logger.warning(f"Signal generation failed for {symbol}. Skipping analysis.")
+            continue
+
         latest_signal_row = signals_df.iloc[-1]
         latest_signal = latest_signal_row['signal']
         
-        # --- FINALIZED "DASHBOARD" LOGGING WITH TIMEZONE CORRECTION ---
-        
-        # FIX: Convert Timestamp from UTC to India Standard Time (IST) for correct display
-        latest_timestamp_utc = latest_signal_row.name
-        latest_timestamp_ist = latest_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Kolkata')
-        
+        if latest_signal == 'BUY': long_entries.append(symbol)
+        elif latest_signal == 'SELL': short_entries.append(symbol)
+        elif latest_signal == 'EXIT_LONG': long_exits.append(symbol)
+        elif latest_signal == 'EXIT_SHORT': short_exits.append(symbol)
+
+        # --- ADAPTIVE "DASHBOARD" LOGGING ---
+        # This new logic intelligently adapts the dashboard to the timeframe.
         is_intraday = timeframe.upper() not in ['D', 'W', '1D', '1W']
-        ts_format = '%Y-%m-%d %H:%M IST' if is_intraday else '%Y-%m-%d' # Add 'IST' to format
-
-        # 1. Gather all the data points for the dashboard
-        last_close = latest_signal_row['close']
-        ema_200 = latest_signal_row['EMA_200']
-        adx_14 = latest_signal_row['ADX_14']
-        adx_threshold = 25
-
-        # 2. Determine the market state based on the strategy's rules
-        market_state = "SIDEWAYS / CHOP"
-        if adx_14 >= adx_threshold:
-            if last_close > ema_200:
-                market_state = "UPTREND"
-            else:
-                market_state = "DOWNTREND"
         
-        # 3. Determine the signal text and color code for clarity
-        signal_color_map = {
-            "BUY": "\033[92m",  "SELL": "\033[91m", "EXIT_LONG": "\033[93m",
-            "EXIT_SHORT": "\033[93m", "HOLD_LONG": "\033[96m", "HOLD_SHORT": "\033[96m",
-            "HOLD": "\033[0m"
-        }
-        END_COLOR = "\033[0m"
-        color = signal_color_map.get(latest_signal, "\033[0m")
+        # Convert timestamp to IST for correct display
+        latest_timestamp_ist = latest_signal_row.name.tz_localize('UTC').tz_convert('Asia/Kolkata')
+        ts_format = '%Y-%m-%d %H:%M IST' if is_intraday else '%Y-%m-%d'
+        
+        last_close = latest_signal_row['close']
+        adx_14 = latest_signal_row.get('ADX_14', 0)
+
+        # Dynamically set parameters based on timeframe
+        if is_intraday:
+            trend_filter_val = latest_signal_row.get('VWAP', 0)
+            trend_filter_name = "VWAP"
+            adx_threshold = 22
+            fast_ema, slow_ema = latest_signal_row.get('EMA_5', 0), latest_signal_row.get('EMA_10', 0)
+            ema_label = "EMA(5) / EMA(10)"
+        else:
+            trend_filter_val = latest_signal_row.get('EMA_200', 0)
+            trend_filter_name = "EMA(200)"
+            adx_threshold = 25
+            fast_ema, slow_ema = latest_signal_row.get('EMA_9', 0), latest_signal_row.get('EMA_15', 0)
+            ema_label = "EMA(9) / EMA(15)"
+
+        market_state = "SIDEWAYS / CHOP"
+        if adx_14 >= adx_threshold and trend_filter_val > 0: # Ensure filter value is calculated
+            market_state = "UPTREND" if last_close > trend_filter_val else "DOWNTREND"
+        
+        signal_color_map = {"BUY": "\033[92m", "SELL": "\033[91m", "EXIT_LONG": "\033[93m", "EXIT_SHORT": "\033[93m", "HOLD_LONG": "\033[96m", "HOLD_SHORT": "\033[96m", "HOLD": "\033[0m"}
+        END_COLOR, color = "\033[0m", signal_color_map.get(latest_signal, "\033[0m")
         colored_signal = f"{color}{latest_signal.replace('_', ' ')}{END_COLOR}"
 
-        # 4. Build the detailed log message using the corrected IST timestamp
         log_message = (
-            f"\n"
-            f"-------------------- ANALYSIS & SIGNAL: {symbol} --------------------\n"
+            f"\n-------------------- ANALYSIS & SIGNAL: {symbol} --------------------\n"
             f"  [MARKET STATE]: {market_state}\n"
             f"    - Trend Strength (ADX): {adx_14:.2f} (Threshold: {adx_threshold})\n"
-            f"    - Long-Term Trend (EMA200): {ema_200:.2f} (Current Price: {last_close:.2f})\n"
-            f"\n"
+            f"    - Trend Filter ({trend_filter_name}): {trend_filter_val:.2f} (Current Price: {last_close:.2f})\n\n"
             f"  [LATEST CANDLE DATA]:\n"
             f"    - Timestamp:        {latest_timestamp_ist.strftime(ts_format)}\n"
-            f"    - Price (Close):    {last_close:.2f}\n"
-            f"    - EMA(9) / EMA(15):   {latest_signal_row.get('EMA_9', 0):.2f} / {latest_signal_row.get('EMA_15', 0):.2f}\n"
-            f"    - RSI(14):          {latest_signal_row.get('RSI_14', 0):.2f}\n"
-            f"\n"
+            f"    - {ema_label}:   {fast_ema:.2f} / {slow_ema:.2f}\n"
+            f"    - RSI(14):          {latest_signal_row.get('RSI_14', 0):.2f}\n\n"
             f"  [FINAL SIGNAL]:\n"
             f"    - Decision:         {colored_signal}\n"
             f"    - Position Status:  {int(latest_signal_row['position'])} (1=Long, -1=Short, 0=Flat)\n"
@@ -94,13 +101,22 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
         logger.info(log_message)
 
         if latest_signal in ['BUY', 'SELL', 'EXIT_LONG', 'EXIT_SHORT']:
-            actionable_signals_found += 1
             print(f"\n"
                   f"  **********************************************************\n"
                   f"  *** ACTIONABLE ALERT: {symbol} -> {color}{latest_signal.replace('_', ' ')}{END_COLOR} ***\n"
                   f"  **********************************************************\n")
     
-    logger.info(f"--- Strategy Cycle Finished. Found {actionable_signals_found} actionable signal(s). ---")
+    logger.info("--- Strategy Cycle Finished ---")
+    if not any([long_entries, long_exits, short_entries, short_exits]):
+        logger.info("  > No new entry or exit signals generated this cycle.")
+    else:
+        summary_message = "\n==================== CYCLE SIGNAL SUMMARY ====================\n"
+        if long_entries: summary_message += f"  > \033[92mNew Long Entries (BUY):\033[0m   {', '.join(long_entries)}\n"
+        if short_entries: summary_message += f"  > \033[91mNew Short Entries (SELL):\033[0m  {', '.join(short_entries)}\n"
+        if long_exits: summary_message += f"  > \033[93mPosition Exits (Long):\033[0m    {', '.join(long_exits)}\n"
+        if short_exits: summary_message += f"  > \033[93mPosition Exits (Short):\033[0m   {', '.join(short_exits)}\n"
+        summary_message += "============================================================"
+        logger.info(summary_message)
 
 def main():
     """
@@ -110,8 +126,8 @@ def main():
     # --- 1. YOUR INPUTS: CONFIGURE YOUR STRATEGY AND DATA HERE ---
     # =================================================================================
     SELECTED_STRATEGY = 1
-    SYMBOLS_TO_TRACK = ['TATAMOTORS', 'ITC', 'HDFCBANK']
-    TIMEFRAME = '1M'
+    SYMBOLS_TO_TRACK = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'ADANIENT', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'ITC', 'AXISBANK', 'SBIN', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI', 'NESTLEIND', 'HCLTECH', 'M&M', 'POWERGRID', 'ULTRACEMCO', 'DRREDDY', 'TATASTEEL', 'SUNPHARMA', 'TITAN', 'TECHM', 'NTPC', 'WIPRO', 'BRITANNIA', 'BAJAJ-AUTO', 'CIPLA', 'ONGC', 'HEROMOTOCO', 'HINDALCO', 'ADANIPORTS', 'GRASIM', 'COALINDIA', 'INDUSINDBK', 'JSWSTEEL', 'TATAMOTORS', 'EICHERMOT', 'HDFCLIFE', 'BAJAJFINSV', 'DIVISLAB', 'BPCL', 'TATACONSUM', 'APOLLOHOSP', 'SHRIRAMFIN', 'SBILIFE', 'LTIM']
+    TIMEFRAME = '5'
     NUM_CANDLES = 252
     CYCLE_INTERVAL_SECONDS = 60
     # =================================================================================
@@ -136,7 +152,7 @@ def main():
         f"\n"
         f"====================== BOT CONFIGURATION ======================\n"
         f"STRATEGY:          #{SELECTED_STRATEGY} ({strategy_function.__name__})\n"
-        f"SYMBOLS:           {', '.join(SYMBOLS_TO_TRACK)}\n"
+        f"SYMBOLS:           ({len(SYMBOLS_TO_TRACK)}) Nifty 50 Symbols\n"
         f"TIMEFRAME:         {TIMEFRAME}\n"
         f"CANDLES TO ANALYZE: {NUM_CANDLES}\n"
         f"CYCLE INTERVAL:    {CYCLE_INTERVAL_SECONDS} seconds\n"

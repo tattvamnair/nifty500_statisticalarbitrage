@@ -6,25 +6,49 @@ from core.logger_setup import logger
 
 def generate_signals(df: pd.DataFrame, use_trend_filter: bool = True):
     """
-    Generates trading signals based on the 9/15 EMA Crossover strategy,
-    enhanced with ADX and Moving Average Slope filters to avoid whipsaws.
+    Generates trading signals using an ADAPTIVE strategy.
+    - For Intraday, it uses a VWAP filter.
+    - For Daily/Positional, it uses an EMA_200 filter.
+    The EMA crossover pair (9/15) is constant for all timeframes.
     """
-    if df.empty or 'EMA_9' not in df.columns:
-        return pd.DataFrame() # Return empty if essential columns are missing
+    if df.empty:
+        return pd.DataFrame()
     
     signals_df = df.copy()
 
-    # --- ADVANCED STRATEGY LOGIC ---
-
-    # Layer 1: The Long-Term Trend Filter (The "Ocean Current")
-    signals_df['is_uptrend'] = signals_df['close'] > signals_df['EMA_200']
+    # --- ADAPTIVE STRATEGY LOGIC ---
     
-    # Layer 2: The Sideways Market Detector (The "Doldrums")
-    adx_threshold = 25
-    signals_df['is_trending'] = signals_df.get('ADX_14', pd.Series(0, index=df.index)) > adx_threshold
+    # --- FINAL BUG FIX: Use a foolproof method to detect intraday runs ---
+    # We check if any date in the index is duplicated. This is only true for intraday data.
+    is_intraday_run = signals_df.index.to_series().dt.date.duplicated().any()
 
+    # Set parameters based on the correctly detected mode
+    if is_intraday_run and 'VWAP' in signals_df.columns:
+        # --- INTRADAY-OPTIMIZED PARAMETERS ---
+        trend_filter_col = 'VWAP'
+        adx_threshold = 22
+        logger.info(f"  > Running in INTRADAY mode (9/15 EMA with VWAP filter).")
+    else:
+        # --- DAILY/POSITIONAL PARAMETERS ---
+        trend_filter_col = 'EMA_200'
+        adx_threshold = 25
+        logger.info(f"  > Running in DAILY/POSITIONAL mode (9/15 EMA with EMA_200 filter).")
+
+    fast_ema, slow_ema = 'EMA_9', 'EMA_15'
+
+    # Defensive check to ensure all needed columns exist before proceeding
+    required_cols = [trend_filter_col, fast_ema, slow_ema, 'ADX_14', 'SMA_50']
+    if not all(col in signals_df.columns for col in required_cols):
+        logger.warning(f"  > Strategy prerequisite columns missing for the selected mode. Cannot generate signals.")
+        return pd.DataFrame()
+
+    # Layer 1: The Trend Filter (Adaptive)
+    signals_df['is_uptrend'] = signals_df['close'] > signals_df[trend_filter_col]
+    
+    # Layer 2: The Sideways Market Detector
+    signals_df['is_trending'] = signals_df['ADX_14'].fillna(0) > adx_threshold
     slope_period = 5
-    slope_threshold = 0.0005 # 0.05% change over the slope period
+    slope_threshold = 0.0005 
     sma50_slope = (signals_df['SMA_50'] - signals_df['SMA_50'].shift(slope_period)) / signals_df['SMA_50'].shift(slope_period)
     signals_df['is_ma_angled_up'] = sma50_slope > slope_threshold
     signals_df['is_ma_angled_down'] = sma50_slope < -slope_threshold
@@ -33,29 +57,22 @@ def generate_signals(df: pd.DataFrame, use_trend_filter: bool = True):
     signals_df['can_go_long'] = signals_df['is_uptrend'] & signals_df['is_trending'] & signals_df['is_ma_angled_up']
     signals_df['can_go_short'] = ~signals_df['is_uptrend'] & signals_df['is_trending'] & signals_df['is_ma_angled_down']
 
-    # Layer 3: The Entry Trigger (The "Go" Signal)
-    ema9_above_ema15 = signals_df['EMA_9'] > signals_df['EMA_15']
-    
-    # --- FIX for FutureWarning & BUG in short logic ---
-    # Using modern `fill_value` syntax to silence warnings and correctly define crossovers.
-    # A long entry is when the current state is True and the prior state was False.
-    ema_crossed_up = ema9_above_ema15 & ~ema9_above_ema15.shift(1, fill_value=False)
-    
-    # A short entry is when the current state is False and the prior state was True.
-    ema_crossed_down = ~ema9_above_ema15 & ema9_above_ema15.shift(1, fill_value=False)
+    # Layer 3: The Entry Trigger
+    ema_fast_above_slow = signals_df[fast_ema] > signals_df[slow_ema]
+    ema_crossed_up = ema_fast_above_slow & ~ema_fast_above_slow.shift(1, fill_value=False)
+    ema_crossed_down = ~ema_fast_above_slow & ema_fast_above_slow.shift(1, fill_value=False)
     
     signals_df['long_entry_trigger'] = ema_crossed_up & signals_df['can_go_long']
     signals_df['short_entry_trigger'] = ema_crossed_down & signals_df['can_go_short']
     
-    # Exit Triggers using modern syntax
-    close_above_ema15 = signals_df['close'] > signals_df['EMA_15']
-    signals_df['long_exit_trigger'] = ~close_above_ema15 & close_above_ema15.shift(1, fill_value=False)
-    signals_df['short_exit_trigger'] = close_above_ema15 & ~close_above_ema15.shift(1, fill_value=False)
-    # --- END OF FIX ---
+    # Exit Triggers (using the slower EMA of the pair)
+    close_above_slow_ema = signals_df['close'] > signals_df[slow_ema]
+    signals_df['long_exit_trigger'] = ~close_above_slow_ema & close_above_slow_ema.shift(1, fill_value=False)
+    signals_df['short_exit_trigger'] = close_above_slow_ema & ~close_above_slow_ema.shift(1, fill_value=False)
 
     # --- Determine Position State & Generate Clearer Signals ---
     signals_df['position'] = 0
-    signals_df['signal'] = 'HOLD' # Default signal
+    signals_df['signal'] = 'HOLD' 
 
     position_state = 0
     for i in range(1, len(signals_df)):
