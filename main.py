@@ -67,8 +67,8 @@ def run_strategy_cycle(strategy_function, symbols, timeframe, num_candles, instr
             trend_filter_val = latest_signal_row.get('VWAP', 0)
             trend_filter_name = "VWAP"
             adx_threshold = 22
-            fast_ema, slow_ema = latest_signal_row.get('EMA_5', 0), latest_signal_row.get('EMA_10', 0)
-            ema_label = "EMA(5) / EMA(10)"
+            fast_ema, slow_ema = latest_signal_row.get('EMA_9', 0), latest_signal_row.get('EMA_15', 0)
+            ema_label = "EMA(9) / EMA(15)"
         else:
             trend_filter_val = latest_signal_row.get('EMA_200', 0)
             trend_filter_name = "EMA(200)"
@@ -127,7 +127,7 @@ def main():
     # =================================================================================
     SELECTED_STRATEGY = 1
     SYMBOLS_TO_TRACK = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'ADANIENT', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'ITC', 'AXISBANK', 'SBIN', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI', 'NESTLEIND', 'HCLTECH', 'M&M', 'POWERGRID', 'ULTRACEMCO', 'DRREDDY', 'TATASTEEL', 'SUNPHARMA', 'TITAN', 'TECHM', 'NTPC', 'WIPRO', 'BRITANNIA', 'BAJAJ-AUTO', 'CIPLA', 'ONGC', 'HEROMOTOCO', 'HINDALCO', 'ADANIPORTS', 'GRASIM', 'COALINDIA', 'INDUSINDBK', 'JSWSTEEL', 'TATAMOTORS', 'EICHERMOT', 'HDFCLIFE', 'BAJAJFINSV', 'DIVISLAB', 'BPCL', 'TATACONSUM', 'APOLLOHOSP', 'SHRIRAMFIN', 'SBILIFE', 'LTIM']
-    TIMEFRAME = '5'
+    TIMEFRAME = '1'
     NUM_CANDLES = 252
     CYCLE_INTERVAL_SECONDS = 60
     # =================================================================================
