@@ -3,7 +3,64 @@
 import pandas as pd
 from core.logger_setup import logger
 
-# (The NIFTY50_INTERNAL_LIST remains the same as before)
+#NIFTY50
+NIFTY50_INTERNAL_LIST = [
+    {"CompanyName": "Adani Enterprises Ltd.", "NSESymbol": "ADANIENT", "Sector": "Metals & Mining", "ISIN": "INE423A01024"},
+    {"CompanyName": "Adani Ports and Special Economic Zone Ltd.", "NSESymbol": "ADANIPORTS", "Sector": "Services", "ISIN": "INE742F01042"},
+    {"CompanyName": "Apollo Hospitals Enterprise Ltd.", "NSESymbol": "APOLLOHOSP", "Sector": "Healthcare", "ISIN": "INE437A01024"},
+    {"CompanyName": "Asian Paints Ltd.", "NSESymbol": "ASIANPAINT", "Sector": "Consumer Durables", "ISIN": "INE021A01026"},
+    {"CompanyName": "Axis Bank Ltd.", "NSESymbol": "AXISBANK", "Sector": "Financial Services", "ISIN": "INE238A01034"},
+    {"CompanyName": "Bajaj Auto Ltd.", "NSESymbol": "BAJAJ-AUTO", "Sector": "Automobile and Auto Components", "ISIN": "INE917I01010"},
+    {"CompanyName": "Bajaj Finance Ltd.", "NSESymbol": "BAJFINANCE", "Sector": "Financial Services", "ISIN": "INE296A01032"},
+    {"CompanyName": "Bajaj Finserv Ltd.", "NSESymbol": "BAJAJFINSV", "Sector": "Financial Services", "ISIN": "INE918I01026"},
+    {"CompanyName": "Bharat Electronics Ltd.", "NSESymbol": "BEL", "Sector": "Capital Goods", "ISIN": "INE263A01024"},
+    {"CompanyName": "Bharti Airtel Ltd.", "NSESymbol": "BHARTIARTL", "Sector": "Telecommunication", "ISIN": "INE397D01024"},
+    {"CompanyName": "Cipla Ltd.", "NSESymbol": "CIPLA", "Sector": "Healthcare", "ISIN": "INE059A01026"},
+    {"CompanyName": "Coal India Ltd.", "NSESymbol": "COALINDIA", "Sector": "Oil Gas & Consumable Fuels", "ISIN": "INE522F01014"},
+    {"CompanyName": "Dr. Reddy's Laboratories Ltd.", "NSESymbol": "DRREDDY", "Sector": "Healthcare", "ISIN": "INE089A01031"},
+    {"CompanyName": "Eicher Motors Ltd.", "NSESymbol": "EICHERMOT", "Sector": "Automobile and Auto Components", "ISIN": "INE066A01021"},
+    {"CompanyName": "Eternal Ltd.", "NSESymbol": "ETERNAL", "Sector": "Consumer Services", "ISIN": "INE758T01015"},
+    {"CompanyName": "Grasim Industries Ltd.", "NSESymbol": "GRASIM", "Sector": "Construction Materials", "ISIN": "INE047A01021"},
+    {"CompanyName": "HCL Technologies Ltd.", "NSESymbol": "HCLTECH", "Sector": "Information Technology", "ISIN": "INE860A01027"},
+    {"CompanyName": "HDFC Bank Ltd.", "NSESymbol": "HDFCBANK", "Sector": "Financial Services", "ISIN": "INE040A01034"},
+    {"CompanyName": "HDFC Life Insurance Company Ltd.", "NSESymbol": "HDFCLIFE", "Sector": "Financial Services", "ISIN": "INE795G01014"},
+    {"CompanyName": "Hero MotoCorp Ltd.", "NSESymbol": "HEROMOTOCO", "Sector": "Automobile and Auto Components", "ISIN": "INE158A01026"},
+    {"CompanyName": "Hindalco Industries Ltd.", "NSESymbol": "HINDALCO", "Sector": "Metals & Mining", "ISIN": "INE038A01020"},
+    {"CompanyName": "Hindustan Unilever Ltd.", "NSESymbol": "HINDUNILVR", "Sector": "Fast Moving Consumer Goods", "ISIN": "INE030A01027"},
+    {"CompanyName": "ICICI Bank Ltd.", "NSESymbol": "ICICIBANK", "Sector": "Financial Services", "ISIN": "INE090A01021"},
+    {"CompanyName": "ITC Ltd.", "NSESymbol": "ITC", "Sector": "Fast Moving Consumer Goods", "ISIN": "INE154A01025"},
+    {"CompanyName": "IndusInd Bank Ltd.", "NSESymbol": "INDUSINDBK", "Sector": "Financial Services", "ISIN": "INE095A01012"},
+    {"CompanyName": "Infosys Ltd.", "NSESymbol": "INFY", "Sector": "Information Technology", "ISIN": "INE009A01021"},
+    {"CompanyName": "JSW Steel Ltd.", "NSESymbol": "JSWSTEEL", "Sector": "Metals & Mining", "ISIN": "INE019A01038"},
+    {"CompanyName": "Jio Financial Services Ltd.", "NSESymbol": "JIOFIN", "Sector": "Financial Services", "ISIN": "INE758E01017"},
+    {"CompanyName": "Kotak Mahindra Bank Ltd.", "NSESymbol": "KOTAKBANK", "Sector": "Financial Services", "ISIN": "INE237A01028"},
+    {"CompanyName": "Larsen & Toubro Ltd.", "NSESymbol": "LT", "Sector": "Construction", "ISIN": "INE018A01030"},
+    {"CompanyName": "Mahindra & Mahindra Ltd.", "NSESymbol": "M&M", "Sector": "Automobile and Auto Components", "ISIN": "INE101A01026"},
+    {"CompanyName": "Maruti Suzuki India Ltd.", "NSESymbol": "MARUTI", "Sector": "Automobile and Auto Components", "ISIN": "INE585B01010"},
+    {"CompanyName": "NTPC Ltd.", "NSESymbol": "NTPC", "Sector": "Power", "ISIN": "INE733E01010"},
+    {"CompanyName": "Nestle India Ltd.", "NSESymbol": "NESTLEIND", "Sector": "Fast Moving Consumer Goods", "ISIN": "INE239A01024"},
+    {"CompanyName": "Oil & Natural Gas Corporation Ltd.", "NSESymbol": "ONGC", "Sector": "Oil Gas & Consumable Fuels", "ISIN": "INE213A01029"},
+    {"CompanyName": "Power Grid Corporation of India Ltd.", "NSESymbol": "POWERGRID", "Sector": "Power", "ISIN": "INE752E01010"},
+    {"CompanyName": "Reliance Industries Ltd.", "NSESymbol": "RELIANCE", "Sector": "Oil Gas & Consumable Fuels", "ISIN": "INE002A01018"},
+    {"CompanyName": "SBI Life Insurance Company Ltd.", "NSESymbol": "SBILIFE", "Sector": "Financial Services", "ISIN": "INE123W01016"},
+    {"CompanyName": "Shriram Finance Ltd.", "NSESymbol": "SHRIRAMFIN", "Sector": "Financial Services", "ISIN": "INE721A01047"},
+    {"CompanyName": "State Bank of India", "NSESymbol": "SBIN", "Sector": "Financial Services", "ISIN": "INE062A01020"},
+    {"CompanyName": "Sun Pharmaceutical Industries Ltd.", "NSESymbol": "SUNPHARMA", "Sector": "Healthcare", "ISIN": "INE044A01036"},
+    {"CompanyName": "Tata Consultancy Services Ltd.", "NSESymbol": "TCS", "Sector": "Information Technology", "ISIN": "INE467B01029"},
+    {"CompanyName": "Tata Consumer Products Ltd.", "NSESymbol": "TATACONSUM", "Sector": "Fast Moving Consumer Goods", "ISIN": "INE192A01025"},
+    {"CompanyName": "Tata Motors Ltd.", "NSESymbol": "TATAMOTORS", "Sector": "Automobile and Auto Components", "ISIN": "INE155A01022"},
+    {"CompanyName": "Tata Steel Ltd.", "NSESymbol": "TATASTEEL", "Sector": "Metals & Mining", "ISIN": "INE081A01020"},
+    {"CompanyName": "Tech Mahindra Ltd.", "NSESymbol": "TECHM", "Sector": "Information Technology", "ISIN": "INE669C01036"},
+    {"CompanyName": "Titan Company Ltd.", "NSESymbol": "TITAN", "Sector": "Consumer Durables", "ISIN": "INE280A01028"},
+    {"CompanyName": "Trent Ltd.", "NSESymbol": "TRENT", "Sector": "Consumer Services", "ISIN": "INE849A01020"},
+    {"CompanyName": "UltraTech Cement Ltd.", "NSESymbol": "ULTRACEMCO", "Sector": "Construction Materials", "ISIN": "INE481G01011"},
+    {"CompanyName": "Wipro Ltd.", "NSESymbol": "WIPRO", "Sector": "Information Technology", "ISIN": "INE075A01022"}
+]
+
+
+
+# (The NIFTY500_INTERNAL_LIST remains the same as before)
+'''
 NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "360 ONE WAM Ltd.", "NSESymbol": "360ONE", "Sector": "Financial Services", "ISIN": "INE466L01038"},
     {"CompanyName": "3M India Ltd.", "NSESymbol": "3MINDIA", "Sector": "Diversified", "ISIN": "INE470A01017"},
@@ -507,6 +564,7 @@ NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "Zydus Lifesciences Ltd.", "NSESymbol": "ZYDUSLIFE", "Sector": "Healthcare", "ISIN": "INE010B01027"},
     {"CompanyName": "eClerx Services Ltd.", "NSESymbol": "ECLERX", "Sector": "Services", "ISIN": "INE738I01010"}
 ]
+'''
 
 #NIFTY MIDSMALL CAP  400
 '''NIFTY50_INTERNAL_LIST = [

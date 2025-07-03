@@ -10,34 +10,36 @@ import time
 
 from core.logger_setup import logger
 
-# --- Configuration Parameters for the Strategy ---
+# --- Configuration Parameters for the Strategy (Tuned for Higher Quality Signals) ---
 FORMATION_PERIOD_CANDLES = 252
 ROLLING_WINDOW = 60
 CORRELATION_THRESHOLD = 0.90
-ADF_P_VALUE_THRESHOLD = 0.05
+ADF_P_VALUE_THRESHOLD = 0.01  # Stricter P-value
 MIN_HALF_LIFE = 5
-MAX_HALF_LIFE = 100
-Z_SCORE_ENTRY = 2.0
+MAX_HALF_LIFE = 50            # Tighter Half-Life Window
+Z_SCORE_ENTRY = 2.5           # Stricter Entry Threshold
 Z_SCORE_STOP_LOSS = 3.0
 Z_SCORE_EXIT = 0.0
 
 # --- Data Structures ---
-# MODIFIED: trade_details will now hold a dictionary with all prices
 PairSignal = namedtuple('PairSignal', [
     'pair', 'signal_type', 'reason', 'z_score', 'hedge_ratio', 'half_life', 'trade_plan', 'trade_details'
 ])
 
 strategy_cache = {
     "cointegrated_pairs": None,
-    "open_positions": {} # Now stores the original trade_details
+    # Will store entry_index for correct bar-based time stops
+    "open_positions": {}
 }
 
 # --- Helper Functions ---
 def _calculate_adf_test(series):
+    """Helper function to run the Augmented Dickey-Fuller test."""
     result = adfuller(series.dropna())
     return result[1]
 
 def _calculate_half_life(spread):
+    """Calculates the half-life of mean reversion for a spread."""
     try:
         spread_lag = spread.shift(1)
         spread_delta = spread - spread_lag
@@ -45,22 +47,27 @@ def _calculate_half_life(spread):
         if len(df) < 10: return -1
         reg = sm.OLS(df['delta'], sm.add_constant(df['lag'])).fit()
         lambda_val = reg.params.iloc[1]
+        
+        # FIX: Handle tiny lambda values to prevent extreme half-life calculations
+        if abs(lambda_val) < 1e-6: return -1
         if lambda_val >= 0: return -1
+
         return -np.log(2) / lambda_val
     except Exception:
         return -1
         
 # --- Core Logic Functions ---
 def find_cointegrated_pairs(all_data_dict, num_candles):
-    # This function is correct and does not need changes.
-    # For brevity, I'll skip pasting it again. The last version was perfect.
+    """Analyzes historical data to find high-quality cointegrated pairs."""
     logger.info("--- Starting Cointegration Analysis ---")
     log_prices = {
         symbol: np.log(df['close'].dropna())
         for symbol, df in all_data_dict.items() if len(df) >= num_candles
     }
     valid_symbols = list(log_prices.keys())
-    if len(valid_symbols) < 2: return []
+    if len(valid_symbols) < 2:
+        logger.warning("Not enough symbols with sufficient data to form pairs.")
+        return []
     logger.info(f"Phase 1: Screening {len(valid_symbols)} stocks for correlation > {CORRELATION_THRESHOLD}.")
     price_df = pd.DataFrame(log_prices)
     corr_matrix = price_df.corr()
@@ -68,7 +75,9 @@ def find_cointegrated_pairs(all_data_dict, num_candles):
         (s1, s2) for s1, s2 in combinations(valid_symbols, 2)
         if s1 in corr_matrix and s2 in corr_matrix.columns and corr_matrix.loc[s1, s2] > CORRELATION_THRESHOLD
     ]
-    if not potential_pairs: return []
+    if not potential_pairs:
+        logger.info("No potential pairs found after correlation filter.")
+        return []
     logger.info(f"Found {len(potential_pairs)} potential pairs. Proceeding to cointegration testing.")
     cointegrated_pairs = []
     for s1, s2 in potential_pairs:
@@ -93,6 +102,7 @@ def find_cointegrated_pairs(all_data_dict, num_candles):
     return cointegrated_pairs
 
 def generate_pair_signals(all_data_dict, pairs_to_check):
+    """Generates trading signals with full per-leg trade plans."""
     if not pairs_to_check: return []
     
     signals = []
@@ -105,21 +115,16 @@ def generate_pair_signals(all_data_dict, pairs_to_check):
             
             if s1_symbol not in all_data_dict or s2_symbol not in all_data_dict: continue
 
-            s1_df = all_data_dict[s1_symbol]
-            s2_df = all_data_dict[s2_symbol]
-            
-            s1_log_prices = np.log(s1_df['close'])
-            s2_log_prices = np.log(s2_df['close'])
+            s1_df, s2_df = all_data_dict[s1_symbol], all_data_dict[s2_symbol]
+            s1_log_prices, s2_log_prices = np.log(s1_df['close']), np.log(s2_df['close'])
 
             rolling_df = pd.DataFrame({'s1': s1_log_prices, 's2': s2_log_prices}).dropna()
-            s1_rolling = rolling_df['s1'].tail(ROLLING_WINDOW)
-            s2_rolling = rolling_df['s2'].tail(ROLLING_WINDOW)
+            s1_rolling, s2_rolling = rolling_df['s1'].tail(ROLLING_WINDOW), rolling_df['s2'].tail(ROLLING_WINDOW)
 
             if len(s1_rolling) < ROLLING_WINDOW: continue
 
             model = sm.OLS(s1_rolling, sm.add_constant(s2_rolling)).fit()
             hedge_ratio = model.params.iloc[1]
-
             spread = s1_rolling - (hedge_ratio * s2_rolling)
             mean_spread, std_spread = spread.mean(), spread.std()
             
@@ -127,31 +132,18 @@ def generate_pair_signals(all_data_dict, pairs_to_check):
 
             current_z_score = (spread.iloc[-1] - mean_spread) / std_spread
 
-            # NEW: Helper to calculate all prices for the trade plan
             def get_trade_details(z_stop_level):
                 details = {}
-                s1_current_price = s1_df['close'].iloc[-1]
-                s2_current_price = s2_df['close'].iloc[-1]
-                
-                # Formula for Y (s1): Price_Y = exp( (Z * Stdev) + Mean + (beta * log(Price_X)) )
-                # Formula for X (s2): Price_X = exp( (log(Price_Y) - (Z * Stdev) - Mean) / beta )
-                
-                # Calculate Target Prices (Z=0)
+                s1_current_price, s2_current_price = s1_df['close'].iloc[-1], s2_df['close'].iloc[-1]
                 s1_log_target = (Z_SCORE_EXIT * std_spread) + mean_spread + (hedge_ratio * np.log(s2_current_price))
                 details['s1_target'] = np.exp(s1_log_target)
-                
                 s2_log_target = (np.log(s1_current_price) - (Z_SCORE_EXIT * std_spread) - mean_spread) / hedge_ratio
                 details['s2_target'] = np.exp(s2_log_target)
-                
-                # Calculate Stop Prices (Z=z_stop_level)
                 s1_log_stop = (z_stop_level * std_spread) + mean_spread + (hedge_ratio * np.log(s2_current_price))
                 details['s1_stop'] = np.exp(s1_log_stop)
-                
                 s2_log_stop = (np.log(s1_current_price) - (z_stop_level * std_spread) - mean_spread) / hedge_ratio
                 details['s2_stop'] = np.exp(s2_log_stop)
-                
-                details['s1_entry'] = s1_current_price
-                details['s2_entry'] = s2_current_price
+                details['s1_entry'], details['s2_entry'] = s1_current_price, s2_current_price
                 return details
 
             time_stop_candles = int(2.5 * pair_info['half_life'])
@@ -159,13 +151,15 @@ def generate_pair_signals(all_data_dict, pairs_to_check):
             if pair in open_positions:
                 position = open_positions[pair]
                 is_closing, exit_reason = False, ""
-                
                 if (position['direction'] == 'LONG' and current_z_score >= Z_SCORE_EXIT) or (position['direction'] == 'SHORT' and current_z_score <= Z_SCORE_EXIT):
                     is_closing, exit_reason = True, f"PROFIT TARGET (Z-Score crossed {Z_SCORE_EXIT:.1f})"
                 elif (position['direction'] == 'LONG' and current_z_score <= -Z_SCORE_STOP_LOSS) or (position['direction'] == 'SHORT' and current_z_score >= Z_SCORE_STOP_LOSS):
                     is_closing, exit_reason = True, f"STATISTICAL STOP (Z-Score hit {Z_SCORE_STOP_LOSS:.1f})"
-                elif (s1_df.index[-1] - position['entry_candle']).days > time_stop_candles:
-                    is_closing, exit_reason = True, "TIME STOP (Max holding period exceeded)"
+                # FIX: Correct time-stop logic using bar index
+                elif 'entry_index' in position:
+                    bars_held = len(s1_df) - position['entry_index']
+                    if bars_held > time_stop_candles:
+                        is_closing, exit_reason = True, f"TIME STOP ({bars_held} bars > {time_stop_candles})"
                 
                 if is_closing:
                     signals.append(PairSignal(pair, f"EXIT_{position['direction']}", exit_reason, current_z_score, 
@@ -179,12 +173,14 @@ def generate_pair_signals(all_data_dict, pairs_to_check):
                     trade_details = get_trade_details(Z_SCORE_STOP_LOSS)
                     signals.append(PairSignal(pair, "ENTER_SHORT", f"Z-Score > {Z_SCORE_ENTRY:.1f}", current_z_score, 
                                               hedge_ratio, pair_info['half_life'], "", trade_details=trade_details))
-                    open_positions[pair] = {"direction": "SHORT", "entry_candle": s1_df.index[-1], "trade_details": trade_details}
+                    # FIX: Store entry_index for time-stop
+                    open_positions[pair] = {"direction": "SHORT", "entry_index": len(s1_df), "trade_details": trade_details}
                 elif current_z_score < -Z_SCORE_ENTRY:
                     trade_details = get_trade_details(-Z_SCORE_STOP_LOSS)
                     signals.append(PairSignal(pair, "ENTER_LONG", f"Z-Score < -{Z_SCORE_ENTRY:.1f}", current_z_score, 
                                               hedge_ratio, pair_info['half_life'], "", trade_details=trade_details))
-                    open_positions[pair] = {"direction": "LONG", "entry_candle": s1_df.index[-1], "trade_details": trade_details}
+                    # FIX: Store entry_index for time-stop
+                    open_positions[pair] = {"direction": "LONG", "entry_index": len(s1_df), "trade_details": trade_details}
         except Exception as e:
             logger.warning(f"Could not generate signal for pair ({pair_info['pair'][0]}, {pair_info['pair'][1]}) due to an error: {e}. Skipping pair for this cycle.")
             continue
@@ -192,6 +188,7 @@ def generate_pair_signals(all_data_dict, pairs_to_check):
     return signals
 
 def generate_signals(all_symbols_data, num_candles):
+    """Main orchestrator function for the Stat Arb strategy."""
     logger.info("--- Starting Statistical Arbitrage Strategy Cycle ---")
 
     if strategy_cache["cointegrated_pairs"] is None:
@@ -222,14 +219,12 @@ def generate_signals(all_symbols_data, num_candles):
         color_map = {"ENTER": "\033[92m", "EXIT": "\033[93m", "HOLD": "\033[96m"}
         signal_color = next((color for key, color in color_map.items() if key in sig.signal_type), "\033[0m")
         
-        # General Info Header
         log_message = (
             f"\n----------- PAIR: {s1} / {s2} -----------\n"
             f"  [STATUS]:           {signal_color}{sig.signal_type.replace('_', ' '):<15}{sig.reason}\033[0m\n"
             f"  [Z-Score]:          {sig.z_score:.2f}\n"
         )
         
-        # Detailed Trade Plan for new entries
         if "ENTER" in sig.signal_type:
             leg1, leg2 = "", ""
             if sig.signal_type == "ENTER_LONG":
@@ -244,10 +239,14 @@ def generate_signals(all_symbols_data, num_candles):
                 f"  > Time Stop: Hold for max {time_stop} candles.\n"
                 f"  > Hedge Ratio (β): {sig.hedge_ratio:.3f}"
             )
-        # Simplified plan for holds and exits
-        else:
-             log_message += (
-                f"  [ORIGINAL PLAN]: Close when Z-Score crosses {Z_SCORE_EXIT} or after {time_stop} candles."
+        else: # For HOLD or EXIT signals
+            orig_details = sig.trade_details
+            leg1_action, leg2_action = ("LONG", "SHORT") if "LONG" in sig.signal_type else ("SHORT", "LONG")
+
+            log_message += (
+                f"  [ORIGINAL PLAN]:\n"
+                f"  > {leg1_action:<6} {s1:<12} at {orig_details['s1_entry']:>8.2f}, Target: {orig_details['s1_target']:>8.2f}, Stop: {orig_details['s1_stop']:>8.2f}\n"
+                f"  > {leg2_action:<6} {s2:<12} at {orig_details['s2_entry']:>8.2f}, Target: {orig_details['s2_target']:>8.2f}, Stop: {orig_details['s2_stop']:>8.2f}"
              )
         
         logger.info(log_message)
