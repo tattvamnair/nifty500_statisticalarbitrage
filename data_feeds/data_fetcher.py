@@ -3,21 +3,22 @@
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-import os # ADDED: For file path operations
+import os
 from core.logger_setup import logger
 from config import settings
 from data_feeds.instrument_manager import InstrumentManager
 
 class DataFetcher:
     """
-    Handles fetching historical market data from DhanHQ, now with a
-    persistent local cache to speed up subsequent runs.
+    Handles fetching historical market data from DhanHQ, with a
+    persistent local cache to speed up subsequent runs. This version has been
+    made more robust to build deep historical data for backtesting.
     """
     def __init__(self, dhan_api_sdk, instrument_manager: InstrumentManager):
+        # This function is unchanged.
         self.dhanhq_sdk = dhan_api_sdk
         self.instrument_mgr = instrument_manager
         self.instrument_master_df = None
-        ## ADDED: Setup the cache directory on initialization ##
         self.cache_dir = "data_cache"
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
@@ -25,7 +26,7 @@ class DataFetcher:
         self._fetch_and_cache_instrument_master()
 
     def _fetch_and_cache_instrument_master(self):
-        # UNCHANGED: This function is preserved exactly as it was.
+        # This function is unchanged.
         try:
             url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
             dtype_spec = {'SECURITY_ID': str, 'ISIN': str}
@@ -34,7 +35,7 @@ class DataFetcher:
             logger.error(f"Failed to fetch or process Dhan instrument master CSV: {e}", exc_info=True)
 
     def get_dhan_details_by_isin(self, isin: str):
-        # UNCHANGED: This function is preserved exactly as it was.
+        # This function is unchanged.
         if self.instrument_master_df is None:
             return None
         match = self.instrument_master_df[(self.instrument_master_df['ISIN'] == isin) & (self.instrument_master_df['EXCH_ID'] == 'NSE') & (self.instrument_master_df['INSTRUMENT'] == 'EQUITY')]
@@ -42,77 +43,81 @@ class DataFetcher:
             return match.iloc[0]['SECURITY_ID']
         return None
 
-    ## REWRITTEN: This is the new cache-aware fetch_data method. ##
     def fetch_data(self, symbol: str, isin: str, timeframe: str, num_candles: int):
+        """
+        REWRITTEN: This is the new, robust, cache-aware fetch method.
+        It can now build a deep historical database by fetching data in chunks.
+        """
         security_id = self.get_dhan_details_by_isin(isin)
         if not security_id:
             return pd.DataFrame()
 
-        # Sanitize symbol for filename and create unique cache path per timeframe
         safe_symbol = symbol.replace('&', '_').replace('-', '_')
         cache_path = os.path.join(self.cache_dir, f"{safe_symbol}_{timeframe}.parquet")
-        cached_df = None
         
-        # Step 1: Check for and load existing cache
+        # Step 1: Load existing data from cache if it exists.
+        cached_df = pd.DataFrame()
         if os.path.exists(cache_path):
             try:
                 cached_df = pd.read_parquet(cache_path)
-                logger.info(f"Loaded {len(cached_df)} candles for {symbol} from local cache.")
+                logger.debug(f"Loaded {len(cached_df)} candles for {symbol} from local cache.")
             except Exception as e:
-                logger.error(f"Could not read cache file for {symbol} at {cache_path}. Will fetch full history. Error: {e}")
-                cached_df = None
+                logger.error(f"Could not read cache file for {symbol}. Will refetch. Error: {e}")
 
-        # Step 2: Determine the date range for the API call
-        to_date = datetime.now()
-        if cached_df is not None and not cached_df.empty:
-            # Incremental fetch: start from the last timestamp in our cache
-            from_date = cached_df.index[-1].to_pydatetime()
-        else:
-            # Full fetch: get enough data to satisfy num_candles
-            timeframe_upper = timeframe.upper()
-            is_daily = timeframe_upper in ['D', '1D', 'W', '1W']
-            days_to_fetch = int(num_candles * (2.0 if is_daily else 1.5))
-            if not is_daily:
-                 # For intraday, Dhan API limit is 90 days, so respect that
-                 days_to_fetch = min(days_to_fetch, 89)
-            from_date = to_date - timedelta(days=days_to_fetch)
+        # Step 2: Fetch any new data since the last cache update (for live bot).
+        # And fetch historical data if cache is insufficient (for backtester).
+        now = datetime.now()
         
-        from_date_str = from_date.strftime("%Y-%m-%d")
-        to_date_str = to_date.strftime("%Y-%m-%d")
+        # --- Fetch NEW data ---
+        # If cache exists, get all new data from the last timestamp to now.
+        from_date_new = cached_df.index[-1].to_pydatetime() if not cached_df.empty else now - timedelta(days=89)
+        new_data_df = self._fetch_from_dhan_api(symbol, security_id, timeframe, from_date_new.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d"))
+        
+        # Combine new data with cache
+        if not new_data_df.empty:
+            cached_df = pd.concat([cached_df, new_data_df])
+            cached_df = cached_df[~cached_df.index.duplicated(keep='last')]
+            cached_df.sort_index(inplace=True)
 
-        # Step 3: Call the API (using a helper to keep this function clean)
-        new_df = self._fetch_from_dhan_api(symbol, security_id, timeframe, from_date_str, to_date_str)
-        
-        # If no new data was fetched, we can just use the cache
-        if new_df.empty and cached_df is not None:
-            logger.info(f"No new candles found for {symbol}. Using cached data.")
-            return self.calculate_indicators(cached_df.tail(num_candles).copy(), symbol)
-        
-        # Step 4: Combine, clean, and update the cache
-        if cached_df is not None and not cached_df.empty:
-            combined_df = pd.concat([cached_df, new_df])
-            # This is critical: remove duplicates, keeping the latest data (handles overlaps)
-            updated_df = combined_df[~combined_df.index.duplicated(keep='last')]
-        else:
-            updated_df = new_df
+        # Step 3: Check if we have enough data for the backtester. If not, fetch it.
+        if len(cached_df) < num_candles:
+            logger.info(f"Insufficient history for {symbol}. Required: {num_candles}, Have: {len(cached_df)}. Building cache...")
+            
+            earliest_date_in_cache = cached_df.index[0] if not cached_df.empty else now
+            
+            while len(cached_df) < num_candles:
+                to_date_historical = earliest_date_in_cache - timedelta(days=1)
+                from_date_historical = to_date_historical - timedelta(days=89) # Fetch in 90-day chunks
+                
+                historical_chunk = self._fetch_from_dhan_api(symbol, security_id, timeframe, from_date_historical.strftime("%Y-%m-%d"), to_date_historical.strftime("%Y-%m-%d"))
+                
+                if historical_chunk.empty:
+                    logger.warning(f"No more historical data available for {symbol} before {to_date_historical.date()}. Stopping history build.")
+                    break
+                
+                cached_df = pd.concat([historical_chunk, cached_df])
+                cached_df = cached_df[~cached_df.index.duplicated(keep='last')]
+                cached_df.sort_index(inplace=True)
+                
+                earliest_date_in_cache = cached_df.index[0]
+                logger.info(f"Fetched historical chunk for {symbol}. Total candles now: {len(cached_df)}.")
 
-        # Step 5: Save to cache and return the final dataframe
-        if not updated_df.empty:
+        # Step 4: Save the potentially updated/built dataframe to cache and return
+        if not cached_df.empty:
             try:
-                updated_df.to_parquet(cache_path)
-                logger.info(f"Cache for {symbol} updated. Total candles: {len(updated_df)}.")
+                cached_df.to_parquet(cache_path)
+                logger.debug(f"Cache for {symbol} updated/saved. Total candles: {len(cached_df)}.")
             except Exception as e:
                 logger.error(f"Failed to write to cache for {symbol}: {e}")
             
-            return self.calculate_indicators(updated_df.tail(num_candles).copy(), symbol)
+            # Finally, return the requested number of candles from the end of our complete DataFrame
+            return self.calculate_indicators(cached_df.tail(num_candles).copy(), symbol)
 
         return pd.DataFrame()
 
+
     def _fetch_from_dhan_api(self, symbol, security_id, timeframe, from_date, to_date):
-        """
-        Helper function to contain the actual API call and data processing logic.
-        This isolates the caching logic from the API interaction logic.
-        """
+        # This function's internal logic is preserved exactly as it was.
         df = pd.DataFrame()
         timeframe_upper = timeframe.upper()
         is_intraday = timeframe_upper not in ['D', '1D', 'W', '1W']
@@ -120,16 +125,7 @@ class DataFetcher:
         try:
             time.sleep(0.3)
             response = None
-
             if not is_intraday:
-                days_to_fetch = int(252 * (2.0 if 'D' in timeframe_upper else 8.0)) # A safe default
-                from_date_obj = datetime.strptime(from_date, "%Y-%m-%d")
-                to_date_obj = datetime.strptime(to_date, "%Y-%m-%d")
-                
-                # Check if we need to adjust from_date for daily calls
-                if (to_date_obj - from_date_obj).days < days_to_fetch:
-                     from_date = (to_date_obj - timedelta(days=days_to_fetch)).strftime("%Y-%m-%d")
-
                 response = self.dhanhq_sdk.historical_daily_data(
                     security_id=str(security_id), exchange_segment=settings.DHAN_SEGMENT_NSE_EQ,
                     instrument_type=settings.DHAN_INSTRUMENT_EQUITY, from_date=from_date, to_date=to_date
@@ -151,7 +147,6 @@ class DataFetcher:
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
                 df.set_index('timestamp', inplace=True)
                 
-                # Resampling logic - preserved from your original code
                 if 'W' in timeframe_upper:
                     ohlc_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                     df = df.resample('W-FRI').agg(ohlc_dict).dropna()
@@ -164,14 +159,15 @@ class DataFetcher:
 
                 return df
             else:
-                logger.error(f"API call for historical data for {symbol} failed. Remarks: {response.get('remarks')}")
+                remarks = response.get('remarks', 'N/A') if isinstance(response, dict) else "Invalid response"
+                logger.error(f"API call for historical data for {symbol} failed. Remarks: {remarks}")
         except Exception as e:
             logger.error(f"Exception during data fetch for {symbol}: {e}", exc_info=True)
             
         return pd.DataFrame()
 
     def get_live_quotes(self, symbol_isin_list: list):
-        # UNCHANGED: This function is preserved exactly as it was.
+        # This function is unchanged.
         if not self.dhanhq_sdk: return {}
         live_quotes_by_symbol = {}
         for symbol, isin in symbol_isin_list:
@@ -194,34 +190,22 @@ class DataFetcher:
         return live_quotes_by_symbol
 
     def calculate_indicators(self, df: pd.DataFrame, symbol: str):
-        """
-        Calculates all indicators needed for both intraday and daily strategies
-        to ensure the adaptive strategy logic has the data it needs.
-        """
-        # UNCHANGED: This function is preserved exactly as it was.
+        # This function is unchanged.
         if df.empty: return df
         try:
             import pandas_ta as ta
-            
-            # --- CALCULATE ALL INDICATORS ---
-            # Intraday-focused indicators
             df['EMA_5'] = ta.ema(df['close'], length=5)
             df['EMA_10'] = ta.ema(df['close'], length=10)
             if 'volume' in df.columns:
                 df['VWAP'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
-
-            # Daily/Positional-focused indicators
             df['EMA_9'] = ta.ema(df['close'], length=9)
             df['EMA_15'] = ta.ema(df['close'], length=15)
-            
-            # Indicators used by both strategies
             df['EMA_200'] = ta.ema(df['close'], length=200)
             df['RSI_14'] = ta.rsi(df['close'], length=14)
             df['SMA_50'] = ta.sma(df['close'], length=50)
             adx_data = ta.adx(df['high'], df['low'], df['close'], length=14)
             if adx_data is not None and not adx_data.empty:
                 df['ADX_14'] = adx_data['ADX_14']
-
         except Exception as e:
             logger.error(f"Error calculating indicators for {symbol}: {e}")
         return df
