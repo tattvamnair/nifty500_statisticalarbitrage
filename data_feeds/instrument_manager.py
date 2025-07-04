@@ -3,6 +3,7 @@
 import pandas as pd
 from core.logger_setup import logger
 
+'''
 #NIFTY50
 NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "Adani Enterprises Ltd.", "NSESymbol": "ADANIENT", "Sector": "Metals & Mining", "ISIN": "INE423A01024"},
@@ -56,11 +57,11 @@ NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "UltraTech Cement Ltd.", "NSESymbol": "ULTRACEMCO", "Sector": "Construction Materials", "ISIN": "INE481G01011"},
     {"CompanyName": "Wipro Ltd.", "NSESymbol": "WIPRO", "Sector": "Information Technology", "ISIN": "INE075A01022"}
 ]
-
+'''
 
 
 # (The NIFTY500_INTERNAL_LIST remains the same as before)
-'''
+
 NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "360 ONE WAM Ltd.", "NSESymbol": "360ONE", "Sector": "Financial Services", "ISIN": "INE466L01038"},
     {"CompanyName": "3M India Ltd.", "NSESymbol": "3MINDIA", "Sector": "Diversified", "ISIN": "INE470A01017"},
@@ -564,7 +565,7 @@ NIFTY50_INTERNAL_LIST = [
     {"CompanyName": "Zydus Lifesciences Ltd.", "NSESymbol": "ZYDUSLIFE", "Sector": "Healthcare", "ISIN": "INE010B01027"},
     {"CompanyName": "eClerx Services Ltd.", "NSESymbol": "ECLERX", "Sector": "Services", "ISIN": "INE738I01010"}
 ]
-'''
+
 
 #NIFTY MIDSMALL CAP  400
 '''NIFTY50_INTERNAL_LIST = [
