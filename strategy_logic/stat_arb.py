@@ -11,14 +11,47 @@ import time
 from core.logger_setup import logger
 
 # --- Configuration Parameters for the Strategy ---
-ROLLING_WINDOW = 60
-CORRELATION_THRESHOLD = 0.90
-ADF_P_VALUE_THRESHOLD = 0.01
+ROLLING_WINDOW = 78    #5M 78
+#ROLLING_WINDOW = 40      #15M
+#ROLLING_WINDOW = 48     #30M
+#ROLLING_WINDOW = 48    #1H
+#ROLLING_WINDOW = 40    #4H
+#ROLLING_WINDOW = 60    #D
+CORRELATION_THRESHOLD = 0.985
+ADF_P_VALUE_THRESHOLD = 0.0008
 MIN_HALF_LIFE = 5
-MAX_HALF_LIFE = 100
-Z_SCORE_ENTRY = 2.5
-Z_SCORE_STOP_LOSS = 3
-Z_SCORE_EXIT = 0.5
+MAX_HALF_LIFE = 75
+
+
+# 5-minute
+Z_SCORE_ENTRY      = 7      # go SHORT if  +2.25, LONG if –2.25
+Z_SCORE_EXIT       = 0      # take-profit once |Z| ≤ 0.20
+Z_SCORE_STOP_LOSS  = 9      # emergency exit if |Z| ≥ 3.25
+
+# 15-minute
+#Z_SCORE_ENTRY      = 2.55
+#Z_SCORE_EXIT       = 0.20
+#Z_SCORE_STOP_LOSS  = 3.55
+
+# 30-minute
+#Z_SCORE_ENTRY      = 2.90
+#Z_SCORE_EXIT       = 0.15
+#Z_SCORE_STOP_LOSS  = 4.25
+
+# 1-hour
+#Z_SCORE_ENTRY      = 3.15
+#Z_SCORE_EXIT       = 0.15
+#Z_SCORE_STOP_LOSS  = 4.75
+
+# 4-hour
+#Z_SCORE_ENTRY      = 3.25
+#Z_SCORE_EXIT       = 0.10
+#Z_SCORE_STOP_LOSS  = 5.00
+
+# Daily
+#Z_SCORE_ENTRY      = 3.40
+#Z_SCORE_EXIT       = 0.05
+#Z_SCORE_STOP_LOSS  = 5.20
 
 # --- Data Structures ---
 PairSignal = namedtuple('PairSignal', [
@@ -130,7 +163,7 @@ def generate_pair_signals(pair_data_slice, pair_info, open_position_state):
 
         if std_spread < 1e-6: return None
 
-        current_z_score = (spread.iloc[-1] - mean_spread) / std_spread
+        current_z_score = (spread.iloc[-1] - mean_spread) / std_spread 
         time_stop_candles = int(3 * pair_info['half_life'])
 
         if open_position_state:
